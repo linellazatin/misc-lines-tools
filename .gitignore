@@ -1,0 +1,8 @@
+# common
+*.bak
+
+# tool-specific
+.nanomneme/
+
+# annoying
+.DS_Store
