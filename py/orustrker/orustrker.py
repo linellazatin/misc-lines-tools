@@ -7,6 +7,7 @@ to disk; the API key is never logged, only masked for display.
 Usage:
   orustrker.py              # snapshot: fetch + display usage once
   orustrker.py -w 30        # watch: live-refreshing screen, session deltas
+  orustrker.py --tui        # interactive menu: browser / snapshot / watch
   orustrker.py -st          # run internal self-checks
 """
 
@@ -22,6 +23,7 @@ import urllib.request
 from datetime import datetime
 
 API_URL = "https://openrouter.ai/api/v1/auth/key"
+API_BASE = "https://openrouter.ai/api/v1"
 BULLET = "\u2022"  # U+2022
 __version__ = "0.1.0"
 
@@ -130,6 +132,60 @@ def rate_text(rate_limit: dict) -> str:
     return f"{req} req / {rate_limit.get('interval', '?')}"
 
 
+def fmt_per_m(price) -> str:
+    """Per-token price string -> $/1M tokens ('$0.15', '$0.016', '$0')."""
+    try:
+        m = float(price) * 1_000_000
+    except (TypeError, ValueError):
+        return "\u2014"
+    if m == 0:
+        return "$0"
+    return f"${m:,.2f}" if m >= 1 else f"${m:.4g}"
+
+
+def fmt_ctx(n) -> str:
+    """1000000 -> '1M', 256000 -> '256K'."""
+    if not n:
+        return "\u2014"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1000:
+        return f"{n // 1000}K"
+    return str(n)
+
+
+def search_models(models: list, query: str) -> list:
+    """Rank models: exact id > id prefix > id substring > name substring.
+    Empty query returns all sorted by id."""
+    q = (query or "").strip().lower()
+    if not q:
+        return sorted(models, key=lambda m: m.get("id", ""))
+    scored = []
+    for m in models:
+        mid = (m.get("id") or "").lower()
+        nm = (m.get("name") or "").lower()
+        if mid == q:
+            s = 0
+        elif mid.startswith(q):
+            s = 1
+        elif q in mid:
+            s = 2
+        elif q in nm:
+            s = 3
+        else:
+            continue
+        scored.append((s, mid, m))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [t[2] for t in scored]
+
+
+def parse_author_slug(model_id: str) -> tuple:
+    """'~qwen/x:free' -> ('qwen','x'); safe for URL paths."""
+    mid = model_id.split(":", 1)[0].lstrip("~")
+    author, _, slug = mid.partition("/")
+    return author, slug
+
+
 # ---------- screen renderer (pure: given now_ts, deterministic) ----------
 
 def _col(label, value, label2=None, value2=None):
@@ -223,8 +279,13 @@ def _http_open(req: urllib.request.Request) -> bytes:
 
 def fetch_key_info(api_key: str) -> dict:
     """GET /auth/key; returns parsed JSON or raises ApiError."""
+    return _get(API_URL, api_key)
+
+
+def _get(url: str, api_key: str) -> dict:
+    """Authenticated GET -> parsed JSON, or ApiError with a clear message."""
     req = urllib.request.Request(
-        API_URL, headers={"Authorization": f"Bearer {api_key}"})
+        url, headers={"Authorization": f"Bearer {api_key}"})
     try:
         body = _http_open(req)
     except urllib.error.HTTPError as e:
@@ -241,6 +302,18 @@ def fetch_key_info(api_key: str) -> dict:
         raise ApiError(f"unparseable response: {e}") from e
 
 
+def fetch_models_user(api_key: str) -> list:
+    """Models this key can actually serve (account provider settings apply)."""
+    return _get(API_BASE + "/models/user", api_key).get("data", [])
+
+
+def fetch_model_endpoints(api_key: str, model_id: str) -> list:
+    """Per-provider endpoint records for one model."""
+    author, slug = parse_author_slug(model_id)
+    data = _get(f"{API_BASE}/models/{author}/{slug}/endpoints", api_key)
+    return data.get("data", {}).get("endpoints", [])
+
+
 # ---------- key + modes ----------
 
 def get_api_key() -> str:
@@ -251,6 +324,39 @@ def get_api_key() -> str:
     if not key:
         raise ApiError("no API key provided")
     return key
+
+
+def read_key(prompt: str = "") -> str:
+    """Single keypress, instant (cbreak keeps Ctrl-C live). Non-tty fallback:
+    type + Enter, first char used. Returns a lowercase char."""
+    if sys.stdin.isatty():
+        try:
+            import termios
+            import tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                if prompt:
+                    sys.stdout.write(prompt)
+                    sys.stdout.flush()
+                tty.setcbreak(fd)
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            return ch.lower()
+        except (ImportError, OSError, ValueError):
+            pass  # e.g. Windows: fall back to line input
+    try:
+        return (input(prompt)[:1] or "q").lower()
+    except EOFError:
+        return "q"
+
+
+def read_line(prompt: str = "") -> str:
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
 
 
 def bar_width() -> int:
@@ -266,7 +372,11 @@ def run_snapshot(api_key: str, color: bool) -> int:
     return 0
 
 
-def run_watch(api_key: str, interval: int, tui: bool, color: bool) -> int:
+def run_watch(api_key: str, interval: int, tui: bool, color: bool,
+              owns_alt: bool = True) -> tuple:
+    """Live watch; returns (exit_code, one_line_summary).
+    When owns_alt is False the caller already holds the alternate screen
+    (menu mode); this just redraws and returns on Ctrl-C."""
     start = time.time()
     baseline = None
     last_spend = None
@@ -286,7 +396,7 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool) -> int:
             + "\n")
         sys.stdout.flush()
 
-    if tui:
+    if tui and owns_alt:
         out(TUI_IN)
     try:
         while True:
@@ -305,12 +415,14 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool) -> int:
                 if not tui:
                     print(f"  warn: {status}", file=sys.stderr)
                 if consec_fail >= 5:
+                    if tui and owns_alt:
+                        out(TUI_OUT)
                     if tui:
                         out(TUI_HOME + "  orustrker: 5 consecutive failures, giving up\n")
-                        out.flush()
+                        sys.stdout.flush()
                     else:
                         print(f"orustrker: error: {status}", file=sys.stderr)
-                    return 1
+                    return 1, f"gave up: {status}"
             if not tui:  # plain log fallback when stdout is not a tty
                 if d is not None:
                     when = datetime.fromtimestamp(time.time()).strftime("%H:%M:%S")
@@ -319,11 +431,173 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool) -> int:
             render()
             time.sleep(interval)
     except KeyboardInterrupt:
-        if tui:
+        if tui and owns_alt:
             out(TUI_OUT)
         el = time.time() - start
         acc = (last_spend - baseline) if (last_spend is not None and baseline is not None) else 0.0
-        print(f"\n  session: {fmt_elapsed(el)}, polls: {polls}, usage accrued: ${acc:.4f}")
+        summary = f"session: {fmt_elapsed(el)}, polls: {polls}, usage accrued: ${acc:.4f}"
+        if owns_alt:
+            print(f"\n  {summary}")
+        return 0, summary
+    finally:
+        if tui and owns_alt:
+            out(TUI_OUT)
+
+
+# ---------- menu + model browser ----------
+
+RESULT_CAP = 12
+
+
+def render_menu(api_key, kd, model_count, last_action, color) -> str:
+    lines = [_c(f" orustrker v{__version__} · OpenRouter Usage Tracker",
+                "1;36", color), _rule(color=color),
+             _col("key", mask_key(api_key) + f" · {kd['tier_text']}"),
+             _col("usage", fmt_usd(kd["spend"]) +
+                  (f" of {fmt_usd(kd['limit'])} (resets {kd['limit_reset']})"
+                   if kd["limit"] is not None else "")),
+             "",
+             _c("  [S] ", "1", color) + "Search available models" +
+             (f" ({model_count})" if model_count is not None else ""),
+             _c("  [N] ", "1", color) + "Snapshot",
+             _c("  [W] ", "1", color) + "Watch · poll interval prompted (5s)",
+             _c("  [Q] ", "1", color) + "Quit"]
+    if last_action:
+        lines += ["", _c(f"  last: {last_action}", "2", color)]
+    lines.append(_c("  press a key · Ctrl-C quits", "2", color))
+    return "\n".join(lines)
+
+
+def render_model_rows(models) -> str:
+    lines = [f"  {'':<3}{'model':<38}{'ctx':>7}   {'$/M in':>9} {'$/M out':>9}"]
+    for i, m in enumerate(models[:RESULT_CAP], 1):
+        pr = m.get("pricing") or {}
+        lines.append(f"  {i:<3}{(m.get('id') or '')[:38]:<38}"
+                     f"{fmt_ctx(m.get('context_length')):>7}   "
+                     f"{fmt_per_m(pr.get('prompt')):>9} "
+                     f"{fmt_per_m(pr.get('completion')):>9}")
+    return "\n".join(lines)
+
+
+def render_model_detail(model, endpoints, color) -> str:
+    lines = [_c(f" {model.get('id')}", "1", color)]
+    if not endpoints:
+        pr = model.get("pricing") or {}
+        lines.append("  no provider data · model pricing: "
+                     f"in {fmt_per_m(pr.get('prompt'))}/M · "
+                     f"out {fmt_per_m(pr.get('completion'))}/M · "
+                     f"cache r {fmt_per_m(pr.get('input_cache_read'))}/M · "
+                     f"cache w {fmt_per_m(pr.get('input_cache_write'))}/M")
+        return "\n".join(lines)
+    lines.append(f"  {'provider':<16}{'ctx':>8} {'maxout':>8}   "
+                 f"{'$/M in':>9} {'$/M out':>9} {'cache r':>9} {'cache w':>9}")
+    for e in sorted(endpoints, key=lambda x: x.get("provider_name", "")):
+        pr = e.get("pricing") or {}
+        lines.append(
+            f"  {(e.get('provider_name') or '?')[:16]:<16}"
+            f"{fmt_ctx(e.get('context_length')):>8} "
+            f"{fmt_ctx(e.get('max_completion_tokens')):>8}   "
+            f"{fmt_per_m(pr.get('prompt')):>9} {fmt_per_m(pr.get('completion')):>9} "
+            f"{fmt_per_m(pr.get('input_cache_read')):>9} "
+            f"{fmt_per_m(pr.get('input_cache_write')):>9}")
+    return "\n".join(lines)
+
+
+def run_browser(api_key, models, tui, color) -> str:
+    """Model-search sub-loop; returns 'menu' when done."""
+    while True:
+        q = read_line("  model / id (empty = all): ")
+        if q.strip().lower() == "q":
+            return "menu"
+        results = search_models(models, q)
+        if not results:
+            print(f"  no matches for {q!r}")
+            continue
+        while True:  # results view
+            print(render_model_rows(results))
+            if len(results) > RESULT_CAP:
+                print(f"  \u2026{len(results) - RESULT_CAP} more")
+            k = read_key("  [1-9] details · [C] new search · [B] menu: ")
+            if k == "b":
+                return "menu"
+            if k == "c":
+                break  # new query, keep results out
+            if k in "123456789":
+                idx = int(k) - 1
+                if idx < min(len(results), RESULT_CAP):
+                    m = results[idx]
+                    try:
+                        eps = fetch_model_endpoints(api_key, m["id"])
+                    except ApiError as e:
+                        eps = []
+                        print(f"  warn: {e}", file=sys.stderr)
+                    print(render_model_detail(m, eps, color))
+                    kk = read_key("  [B] results · [C] new search · [M] menu: ")
+                    if kk == "m":
+                        return "menu"
+                    if kk == "c":
+                        break
+                    # b / other: fall through, results view redraws
+    return "menu"
+
+
+def run_tui(api_key, tui, color) -> int:
+    """Interactive menu loop; owns the alternate screen while tui."""
+    out = sys.stdout.write
+    if tui:
+        out(TUI_IN)
+    try:
+        try:
+            kd = derive(fetch_key_info(api_key))
+        except ApiError as e:
+            print(f"orustrker: error: {e}", file=sys.stderr)
+            return 1
+        models = None
+        last_action = ""
+        while True:
+            menu = render_menu(api_key, kd,
+                               len(models) if models is not None else None,
+                               last_action, color if tui else False)
+            if tui:
+                out(TUI_HOME + menu + "\n")
+                sys.stdout.flush()
+            else:
+                print(menu)
+            k = read_key("  > ")
+            if k in ("q", "\x1b", ""):
+                return 0
+            elif k == "s":
+                if models is None:
+                    try:
+                        models = fetch_models_user(api_key)
+                    except ApiError as e:
+                        last_action = f"model fetch failed: {e}"
+                        continue
+                run_browser(api_key, models, tui, color)
+                last_action = ""
+            elif k == "n":
+                try:
+                    kd = derive(fetch_key_info(api_key))
+                    kd["progress_bar"] = progress(kd["spend"], kd["limit"],
+                                                  bar_width())
+                    if tui:
+                        out(TUI_HOME + build_screen(api_key, kd, time.time(),
+                                                    None, color) + "\n\n")
+                    else:
+                        print(build_screen(api_key, kd, time.time(), None, False))
+                    last_action = "snapshot ok"
+                except ApiError as e:
+                    last_action = f"snapshot failed: {e}"
+                read_key("  press any key to return: ")
+            elif k == "w":
+                raw = read_line("  poll in sec (default 5): ").strip()
+                interval = int(raw) if raw.isdigit() and int(raw) > 0 else 5
+                rc, last_action = run_watch(api_key, interval, tui, color,
+                                            owns_alt=False)
+                try:
+                    kd = derive(fetch_key_info(api_key))
+                except ApiError:
+                    pass
         return 0
     finally:
         if tui:
@@ -384,6 +658,59 @@ def run_selftest() -> int:
     check("rate_text normal", rate_text({"requests": 200, "interval": "10s"}),
           "200 req / 10s")
     check("rate_text empty", rate_text({}), "")
+
+    check("fmt_per_m 0.15", fmt_per_m("0.00000015"), "$0.15")
+    check("fmt_per_m cache", fmt_per_m("0.000000016"), "$0.016")
+    check("fmt_per_m big", fmt_per_m("0.000003"), "$3.00")
+    check("fmt_per_m free", fmt_per_m("0"), "$0")
+    check("fmt_per_m none", fmt_per_m(None), "\u2014")
+    check("fmt_ctx 1M", fmt_ctx(1000000), "1M")
+    check("fmt_ctx 1.5M", fmt_ctx(1500000), "1.5M")
+    check("fmt_ctx 256K", fmt_ctx(256000), "256K")
+    check("fmt_ctx small", fmt_ctx(512), "512")
+
+    ms = [{"id": "b/model", "name": "B"}, {"id": "a/model", "name": "A"},
+          {"id": "a/model-x", "name": "Vendor: Model Extended"},
+          {"id": "z/model", "name": "Contains model word"}]
+    check("search empty sorts", [m["id"] for m in search_models(ms, "")],
+          ["a/model", "a/model-x", "b/model", "z/model"])
+    check("search exact first",
+          [m["id"] for m in search_models(ms, "a/model")],
+          ["a/model", "a/model-x"])
+    check("search prefix", [m["id"] for m in search_models(ms, "a/")],
+          ["a/model", "a/model-x"])
+    check("search name", [m["id"] for m in search_models(ms, "extended")],
+          ["a/model-x"])
+    check("search substring", [m["id"] for m in search_models(ms, "model")],
+          ["a/model", "a/model-x", "b/model", "z/model"])
+    check("search none", search_models(ms, "nothing"), [])
+    check("parse slug plain", parse_author_slug("qwen/qwen3.8-flash"),
+          ("qwen", "qwen3.8-flash"))
+    check("parse slug variant", parse_author_slug("openrouter/auto:free"),
+          ("openrouter", "auto"))
+    check("parse slug tilde", parse_author_slug("~deepseek/deepseek-pro"),
+          ("deepseek", "deepseek-pro"))
+
+    menu = render_menu("sk-or-v1-1234567890abcdef", d, 93, "", False)
+    check("menu has options", all(s in menu for s in
+          ("[S] Search available models (93)", "[N] Snapshot",
+           "[W] Watch", "[Q] Quit")), True)
+    check("menu no ANSI plain", "\033[" in menu, False)
+    fake_eps = [{"provider_name": "Alibaba", "context_length": 1000000,
+                 "max_completion_tokens": 65536,
+                 "pricing": {"prompt": "0.00000015", "completion": "0.00000047",
+                             "input_cache_read": "0.000000016",
+                             "input_cache_write": "0.0000002"}}]
+    det = render_model_detail({"id": "qwen/qwen3.8-flash", "pricing": {}},
+                              fake_eps, False)
+    check("detail provider row",
+          "Alibaba" in det and "$0.15" in det and "$0.47" in det
+          and "$0.016" in det and "$0.2" in det and "1M" in det, True)
+    rows = render_model_rows([{"id": "qwen/x", "context_length": 256000,
+                               "pricing": {"prompt": "0.00000008",
+                                           "completion": "0.0000003"}}])
+    check("rows model line",
+          "qwen/x" in rows and "256K" in rows and "$0.08" in rows, True)
 
     # screen: deterministic given a fixed now_ts; all lines share structure
     now = datetime(2026, 1, 2, 12, 34).timestamp()
@@ -449,7 +776,9 @@ def run() -> int:
         prog="orustrker",
         description="Track OpenRouter API key usage (session-only, no disk).")
     parser.add_argument("-w", "--watch", type=int, metavar="SECONDS",
-                        help="live-refreshing watch every SECONDS with session deltas")
+                        help="live refreshing watch every SECONDS with session deltas")
+    parser.add_argument("--tui", action="store_true",
+                        help="interactive menu: model browser, snapshot, watch")
     parser.add_argument("-st", "--selftest", action="store_true",
                         help="run internal checks and exit")
     parser.add_argument("--version", action="version",
@@ -469,7 +798,15 @@ def run() -> int:
             print("orustrker: error: watch interval must be positive", file=sys.stderr)
             return 1
         try:
-            return run_watch(get_api_key(), args.watch, tui, color)
+            rc, _summary = run_watch(get_api_key(), args.watch, tui, color)
+            return rc
+        except ApiError as e:
+            print(f"orustrker: error: {e}", file=sys.stderr)
+            return 1
+
+    if args.tui:
+        try:
+            return run_tui(get_api_key(), tui, color)
         except ApiError as e:
             print(f"orustrker: error: {e}", file=sys.stderr)
             return 1
