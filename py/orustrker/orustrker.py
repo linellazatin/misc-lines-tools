@@ -97,7 +97,6 @@ def derive(data: dict) -> dict:
         remaining = None
     regions = info.get("allowed_data_regions") or []
     return {
-        "label": info.get("label") or "N/A",
         "is_free_tier": bool(info.get("is_free_tier")),
         "tier_text": "free" if info.get("is_free_tier") else "paid",
         "is_management_key": bool(info.get("is_management_key")),
@@ -159,7 +158,6 @@ def build_screen(api_key: str, d: dict | None, now_ts: float,
         return "\n".join(lines)
 
     lines.append(_col("key", mask_key(api_key)))
-    lines.append(_col("label", d["label"]))
     tier = d["tier_text"]
     if d["is_management_key"]:
         tier += " · mgmt"
@@ -193,8 +191,6 @@ def build_screen(api_key: str, d: dict | None, now_ts: float,
 
     if session is not None:
         lines.append(_rule("session", color))
-        lines.append(_col("poll", str(session["polls"]), "next in",
-                          f"{session['next_in']}s · every {session['interval']}s"))
         delta = (session["spend"] - session["baseline"]) \
             if session.get("baseline") is not None and session.get("spend") is not None else 0.0
         lines.append(_col("session Δ", f"${delta:+.4f}",
@@ -279,13 +275,12 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool) -> int:
     status = "ok"
     out = sys.stdout.write
 
-    def render(next_in):
+    def render():
         if not tui:
             return
         out(TUI_HOME + build_screen(
             api_key, d, time.time(),
-            session={"interval": interval, "next_in": next_in, "polls": polls,
-                     "baseline": baseline, "spend": last_spend,
+            session={"baseline": baseline, "spend": last_spend,
                      "start_ts": start, "status": status}, color=color)
             + "\n")
         sys.stdout.flush()
@@ -320,9 +315,8 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool) -> int:
                     when = datetime.fromtimestamp(time.time()).strftime("%H:%M:%S")
                     dl = f" Δ ${last_spend - baseline:+.4f}" if baseline is not None else ""
                     print(f"  [{when}] spend ${last_spend:.4f}{dl}  [{status}]")
-            for rem in range(interval, 0, -1):
-                render(rem)
-                time.sleep(1)
+            render()
+            time.sleep(interval)
     except KeyboardInterrupt:
         if tui:
             out(TUI_OUT)
@@ -402,10 +396,11 @@ def run_selftest() -> int:
     check("screen no ANSI when color off", "\033[" in scr, False)
     check("screen shows remaining", "$75.0000" in scr, True)
     check("screen shows free", "3 / 1000" in scr, True)
-    scr2 = build_screen("k", dd, now, session={"interval": 5, "next_in": 3,
-                          "polls": 2, "baseline": 10.0, "spend": 12.0,
+    scr2 = build_screen("k", dd, now, session={"baseline": 10.0, "spend": 12.0,
                           "start_ts": now - 100, "status": "ok"}, color=False)
     check("screen live badge", "[live]" in scr2, True)
+    check("screen drops label", "label" in scr, False)
+    check("screen drops poll line", "poll" in scr2, False)
     check("screen session delta", "$+2.0000" in scr2, True)
     check("screen ansi when color on", "\033[" in build_screen("k", dd, now, color=True), True)
 
