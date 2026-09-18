@@ -3,6 +3,7 @@
 
 # tool-specific
 .nanomneme/
+super*/
 
 # annoying
 .DS_Store
