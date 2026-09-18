@@ -13,6 +13,7 @@ Usage:
 import argparse
 import getpass
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -96,6 +97,41 @@ def fetch_key_info(api_key: str) -> dict:
         raise ApiError(f"unparseable response: {e}") from e
 
 
+# ---------- key + snapshot ----------
+
+def get_api_key() -> str:
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if not key:
+        key = getpass.getpass("OpenRouter API key: ")
+    key = key.strip()
+    if not key:
+        raise ApiError("no API key provided")
+    return key
+
+
+def render_snapshot(api_key: str, data: dict) -> str:
+    d = derive(data)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"  key:       {mask_key(api_key)}",
+        f"  label:     {d['label']}",
+        f"  free tier: {d['free_tier_text']}",
+        f"  used:      {fmt_usd(d['usage'])}",
+    ]
+    if d["limit"] is not None:
+        lines.append(f"  limit:     {fmt_usd(d['limit'])}")
+        lines.append(f"  remaining: {fmt_usd(d['remaining'])}")
+        lines.append(f"  progress:  {d['progress_bar']}")
+    else:
+        lines.append("  limit:     not set")
+    if d["rate_limit"]:
+        rl = d["rate_limit"]
+        lines.append(f"  rate:      {rl.get('requests', '?')} req / "
+                     f"{rl.get('interval', '?')}")
+    lines.append(f"  checked:   {now}")
+    return "\n".join(lines)
+
+
 # ---------- self-check ----------
 
 def run_selftest() -> int:
@@ -171,7 +207,7 @@ def run_selftest() -> int:
     return 0
 
 
-def main() -> int:
+def run() -> int:
     parser = argparse.ArgumentParser(
         prog="orustrker",
         description="Track OpenRouter API key usage (session-only, no disk).")
@@ -184,6 +220,20 @@ def main() -> int:
     if args.selftest:
         return run_selftest()
 
+    if args.watch:
+        print("orustrker: watch mode pending", file=sys.stderr)
+        return 1
+
+    try:
+        api_key = get_api_key()
+        print(f"  using key: {mask_key(api_key)}\n", file=sys.stderr)
+        data = fetch_key_info(api_key)
+        print(render_snapshot(api_key, data))
+        return 0
+    except ApiError as e:
+        print(f"orustrker: error: {e}", file=sys.stderr)
+        return 1
+
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
