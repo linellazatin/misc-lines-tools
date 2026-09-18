@@ -446,7 +446,13 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool,
 
 # ---------- menu + model browser ----------
 
-RESULT_CAP = 12
+RESULT_CAP = 9
+
+
+def clamp_page(page, total, size):
+    """(page, pages) with page clamped into range."""
+    pages = max(1, (total + size - 1) // size)
+    return max(0, min(page, pages - 1)), pages
 
 
 def render_menu(api_key, kd, model_count, last_action, color) -> str:
@@ -470,7 +476,7 @@ def render_menu(api_key, kd, model_count, last_action, color) -> str:
 
 def render_model_rows(models) -> str:
     lines = [f"  {'':<3}{'model':<38}{'ctx':>7}   {'$/M in':>9} {'$/M out':>9}"]
-    for i, m in enumerate(models[:RESULT_CAP], 1):
+    for i, m in enumerate(models, 1):
         pr = m.get("pricing") or {}
         lines.append(f"  {i:<3}{(m.get('id') or '')[:38]:<38}"
                      f"{fmt_ctx(m.get('context_length')):>7}   "
@@ -504,40 +510,65 @@ def render_model_detail(model, endpoints, color) -> str:
 
 
 def run_browser(api_key, models, tui, color) -> str:
-    """Model-search sub-loop; returns 'menu' when done."""
+    """Model-search sub-loop; returns 'menu' when done. Each view clears
+    the screen (tui) so output never piles up."""
+    out = sys.stdout.write
+
+    def clear():
+        if tui:
+            out(TUI_HOME)
+
     while True:
+        clear()
         q = read_line("  model / id (empty = all): ")
         if q.strip().lower() == "q":
             return "menu"
         results = search_models(models, q)
         if not results:
+            clear()
             print(f"  no matches for {q!r}")
             continue
+        page = 0
         while True:  # results view
-            print(render_model_rows(results))
-            if len(results) > RESULT_CAP:
-                print(f"  \u2026{len(results) - RESULT_CAP} more")
-            k = read_key("  [1-9] details · [C] new search · [B] menu: ")
+            page, pages = clamp_page(page, len(results), RESULT_CAP)
+            lo = page * RESULT_CAP
+            shown = results[lo:lo + RESULT_CAP]
+            clear()
+            print(render_model_rows(shown))
+            nav = " \u00b7 [N]ext \u00b7 [P]rev" if pages > 1 else ""
+            print(f"  {lo + 1}-{lo + len(shown)} of {len(results)}{nav}")
+            k = read_key("  [1-9] details \u00b7 [C] new search \u00b7 [B] menu: ")
             if k == "b":
                 return "menu"
             if k == "c":
-                break  # new query, keep results out
+                break  # new query
+            if k == "n":
+                page += 1
+                continue
+            if k == "p":
+                page -= 1
+                continue
             if k in "123456789":
                 idx = int(k) - 1
-                if idx < min(len(results), RESULT_CAP):
-                    m = results[idx]
+                if idx < len(shown):
+                    m = shown[idx]
+                    warn = ""
                     try:
                         eps = fetch_model_endpoints(api_key, m["id"])
                     except ApiError as e:
                         eps = []
-                        print(f"  warn: {e}", file=sys.stderr)
+                        warn = f"  warn: {e}"
+                    clear()
+                    if warn:
+                        print(warn)
                     print(render_model_detail(m, eps, color))
-                    kk = read_key("  [B] results · [C] new search · [M] menu: ")
+                    kk = read_key("  [B] results \u00b7 [C] new search \u00b7 [M] menu: ")
                     if kk == "m":
                         return "menu"
                     if kk == "c":
                         break
                     # b / other: fall through, results view redraws
+        continue
     return "menu"
 
 
@@ -690,6 +721,10 @@ def run_selftest() -> int:
           ("openrouter", "auto"))
     check("parse slug tilde", parse_author_slug("~deepseek/deepseek-pro"),
           ("deepseek", "deepseek-pro"))
+    check("clamp first", clamp_page(0, 44, 9), (0, 5))
+    check("clamp overflow", clamp_page(9, 44, 9), (4, 5))
+    check("clamp single page", clamp_page(2, 8, 9), (0, 1))
+    check("clamp last exact", clamp_page(1, 10, 9), (1, 2))
 
     menu = render_menu("sk-or-v1-1234567890abcdef", d, 93, "", False)
     check("menu has options", all(s in menu for s in
