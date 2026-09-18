@@ -1,6 +1,9 @@
 # common
 *.bak
 
+# build files
+__pycache__
+
 # tool-specific
 .nanomneme/
 super*/

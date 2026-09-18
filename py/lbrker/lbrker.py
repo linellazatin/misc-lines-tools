@@ -22,7 +22,7 @@ import os
 import re
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 TEXT_EXTS = {".md", ".mdx", ".rst", ".txt"}
 SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv"}
@@ -95,11 +95,38 @@ def analyze(text, mode):
     breaks = 0
     changed = False
     in_fence = False
+    last_was_list = False
 
     def flush():
-        nonlocal breaks, changed
+        nonlocal breaks, changed, last_was_list
         if not block:
             return
+        if last_was_list and out and block and re.match(r'^  ', block[0]):
+            # Join continuation lines onto the preceding list-item line.
+            # Only when block starts with indented text (2+ spaces) — the
+            # marker that distinguishes a real continuation from plain prose
+            # that happens to immediately follow a bullet.
+            anchor = out[-1]
+            result = anchor
+            j = 0
+            prev = anchor
+            for cont in block:
+                if _joinable_break(prev, mode):
+                    result = result.rstrip() + " " + cont.strip()
+                    j += 1
+                else:
+                    result += "\n" + cont.strip()
+                prev = cont
+            if j:
+                out[-1] = result
+                breaks += j
+                changed = True
+            else:
+                out.extend(block)
+            block.clear()
+            last_was_list = False
+            return
+        last_was_list = False
         t, j = _join_block(block, mode)
         if t is None:
             out.extend(block)
@@ -117,14 +144,17 @@ def analyze(text, mode):
             continue
         if not line.strip():
             flush()
+            last_was_list = False
             out.append(line)
         elif FENCE_RE.match(line):
             flush()
+            last_was_list = False
             out.append(line)
             in_fence = True
         elif is_structural(line):
             flush()
             out.append(line)
+            last_was_list = bool(LIST_RE.match(line))
         else:
             block.append(line)
     flush()
@@ -289,6 +319,27 @@ def selftest():
 
     t = "first line\r\nsecond line\r\n"
     eq("both: CRLF preserved", analyze(t, "both"), (1, "first line second line\r\n"))
+
+    t = "- item starts here\n  and continues on this line\n"
+    eq("both: list continuation joined", analyze(t, "both"), (1, "- item starts here and continues on this line\n"))
+
+    t = "- item starts here\n  continues here\n  still going\n"
+    eq("both: multi-line list continuation joined", analyze(t, "both"), (2, "- item starts here continues here still going\n"))
+
+    t = "- First sentence.\n  Second sentence.\n"
+    eq("clauses: list continuation after period kept", analyze(t, "clauses"), (0, None))
+
+    t = "- item wraps mid-sentence\n  and continues\n"
+    eq("clauses: list continuation mid-sentence joined", analyze(t, "clauses"), (1, "- item wraps mid-sentence and continues\n"))
+
+    t = "- item\n\n  orphan after blank\n"
+    eq("both: blank resets list context, orphan kept", analyze(t, "both"), (0, None))
+
+    t = "- item hard break  \n  continuation\n"
+    eq("both: hard-break list line not joined", analyze(t, "both"), (0, None))
+
+    t = "## Heading\n  indented text\n"
+    eq("both: heading continuation not joined", analyze(t, "both"), (0, None))
 
     eq("structural heading", is_structural("# Hi"), True)
     eq("structural bullet", is_structural("- item"), True)

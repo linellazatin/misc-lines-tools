@@ -20,11 +20,9 @@ The API key comes from the `OPENROUTER_API_KEY` environment variable, or an inte
 
 Hotkey-driven (single press, no Enter; termios cbreak, stdlib). Header shows masked key + spend vs limit. Options:
 
-- `[S]` model browser: searches the models **this key** can serve
-  (`/models/user`, account provider settings apply; cached per session). Substring match on id/name, results paginated 9 per page (`[N]ext` / `[P]rev`), digit opens the per-provider table (provider, context, max out, $/M tokens: in, out, cache read, cache write). Each view clears the screen — output never piles up.
+- `[S]` model browser: searches the models **this key** can serve (`/models/user`, account provider settings apply; cached per session). Substring match on id/name, results paginated 9 per page (`[N]ext` / `[P]rev`), digit opens the per-provider table (provider, context, max out, $/M tokens: in, out, cache read, cache write). Each view clears the screen — output never piles up.
 - `[N]` snapshot: the status screen, one poll.
-- `[W]` watch: prompts for the poll interval (default 5), then the live
-  screen; Ctrl-C returns to the menu (summary kept as a "last:" line).
+- `[W]` watch: prompts for the poll interval (default 5), then the live screen; Ctrl-C returns to the menu (summary kept as a "last:" line).
 - `[Q]` quit.
 
 Omitted by design: time-of-day pricing overrides, per-model usage history (management-only), browsing all 445 models the key cannot serve.
@@ -41,14 +39,10 @@ When stdout is not a terminal (piping to a file, grep, etc.) the TUI is skipped 
 
 ## Known limits
 
-- The screen refreshes once per poll interval — usage data only changes when
-  polled (OpenRouter has no push), so there is no value in redrawing between polls.
-- OpenRouter exposes no per-key usage history API. Per-request breakdown
-  needs the recording proxy (see "Extensions planned" below).
-- The `/auth/key` `rate_limit` field is deprecated upstream (always reports
-  `-1`); the live per-minute cap is enforced but not queryable per key.
-- The key's `usage` field ignores BYOK spend; orustrker uses the API's
-  `limit_remaining` and a `usage + byok_usage` spend metric so BYOK keys are not silently under-reported.
+- The screen refreshes once per poll interval — usage data only changes when polled (OpenRouter has no push), so there is no value in redrawing between polls.
+- OpenRouter exposes no per-key usage history API. Per-request breakdown needs the recording proxy (see "Extensions planned" below).
+- The `/auth/key` `rate_limit` field is deprecated upstream (always reports `-1`); the live per-minute cap is enforced but not queryable per key.
+- The key's `usage` field ignores BYOK spend; orustrker uses the API's `limit_remaining` and a `usage + byok_usage` spend metric so BYOK keys are not silently under-reported.
 - Free-tier keys may report no limit; the screen then shows "no limit set".
 - The tool makes one `/auth/key` request per snapshot, plus one per watch poll.
 
