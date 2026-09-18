@@ -30,10 +30,8 @@ Never touched: headings, list items, blockquotes, tables, horizontal rules, fenc
 **Included**
 
 - `*.md`, `*.mdx`, `*.rst`, `*.txt`
-- Extensionless files with known doc names, case-insensitive:
-  `LICENSE`, `COPYING`, `NOTICE`, `README`, `CHANGELOG`, `CHANGES`, `AUTHORS`, `CONTRIBUTORS`, `INSTALL`, `SECURITY`, `CODE_OF_CONDUCT`, `CONTRIBUTING`, `VERSION`, `MANIFEST`
-- `-f` accepts specific files or globs (`-f file1.md 'file4*'`); non-doc files
-  in the match are ignored, never touched
+- Extensionless files with known doc names, case-insensitive: `LICENSE`, `COPYING`, `NOTICE`, `README`, `CHANGELOG`, `CHANGES`, `AUTHORS`, `CONTRIBUTORS`, `INSTALL`, `SECURITY`, `CODE_OF_CONDUCT`, `CONTRIBUTING`, `VERSION`, `MANIFEST`
+- `-f` accepts specific files or globs (`-f file1.md 'file4*'`); non-doc files in the match are ignored, never touched
 
 **Excluded**
 
@@ -46,7 +44,7 @@ Never touched: headings, list items, blockquotes, tables, horizontal rules, fenc
 
 ## Known limits
 
-- Wrapped continuation lines inside list items / blockquotes are not joined.
+- Blockquote continuation lines are not joined.
 - `.gitignore` negation is ignored.
 - Backups are never overwritten; delete old `.bak` files manually.
 
