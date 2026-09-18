@@ -22,6 +22,8 @@ import os
 import re
 import sys
 
+__version__ = "0.1.0"
+
 TEXT_EXTS = {".md", ".mdx", ".rst", ".txt"}
 SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv"}
 
@@ -215,7 +217,7 @@ def expand_files(patterns):
     return out
 
 def show_list(info, selected):
-    print(f"\n{len(info)} files with line breaks found:")
+    print(f"{len(info)} files with line breaks found:")
     for i, (rel, _fp, breaks, _text) in enumerate(info, 1):
         mark = "x" if selected[i - 1] else " "
         print(f"  [{mark}] {i:<3} {rel:<40} {breaks} breaks")
@@ -332,6 +334,7 @@ def selftest():
 
 def build_parser():
     ap = argparse.ArgumentParser(prog="lbrker", description=__doc__.splitlines()[0])
+    ap.add_argument("--version", action="version", version=f"lbrker {__version__}")
     ap.add_argument("-d", "--dir", default=".", help="directory to scan (default: .)")
     ap.add_argument("-m", "--mode", choices=["both", "clauses"], default="both",
                     help="both: join any wrapped paragraph (default); clauses: only join lines not ending in .!?")
@@ -347,6 +350,8 @@ def main(argv=None):
 
     if args.selftest:
         return selftest()
+
+    print(f"lbrker v{__version__}")
 
     info = []
     if args.file:

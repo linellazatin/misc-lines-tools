@@ -23,6 +23,7 @@ from datetime import datetime
 
 API_URL = "https://openrouter.ai/api/v1/auth/key"
 BULLET = "\u2022"  # U+2022
+__version__ = "0.1.0"
 
 # alternate-screen / cursor control (raw ANSI, btop's technique; stdlib only)
 TUI_IN = "\033[?1049h\033[?25l"
@@ -148,7 +149,7 @@ def build_screen(api_key: str, d: dict | None, now_ts: float,
                  session: dict | None = None, color: bool = False) -> str:
     """Render the full status screen as one string (no trailing newline)."""
     lines = []
-    title = "orustrker · OpenRouter Usage Tracker"
+    title = f"orustrker v{__version__} · OpenRouter Usage Tracker"
     lines.append(_c(" " + title + ("   [live]" if session else ""), "1;36", color))
     lines.append(_rule(color=color))
 
@@ -391,7 +392,7 @@ def run_selftest() -> int:
                           "free_model_daily_requests": {"used": 3, "limit": 1000, "remaining": 997}}})
     dd["progress_bar"] = progress(dd["spend"], dd["limit"], 20)
     scr = build_screen("sk-or-v1-1234567890abcdef", dd, now, session=None, color=False)
-    check("screen has title", "orustrker · OpenRouter Usage Tracker" in scr, True)
+    check("screen has title", f"orustrker v{__version__} · OpenRouter Usage Tracker" in scr, True)
     check("screen masks key", ("sk-or-v1" + BULLET * 16 + "cdef") in scr, True)
     check("screen no ANSI when color off", "\033[" in scr, False)
     check("screen shows remaining", "$75.0000" in scr, True)
@@ -451,6 +452,8 @@ def run() -> int:
                         help="live-refreshing watch every SECONDS with session deltas")
     parser.add_argument("-st", "--selftest", action="store_true",
                         help="run internal checks and exit")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {__version__}")
     parser.add_argument("--plain", action="store_true",
                         help="force plain output (no TUI/color)")
     args = parser.parse_args()
