@@ -132,6 +132,53 @@ def render_snapshot(api_key: str, data: dict) -> str:
     return "\n".join(lines)
 
 
+# ---------- watch ----------
+
+def render_tick(now_ts, usage, delta, remaining):
+    when = datetime.fromtimestamp(now_ts).strftime("%H:%M:%S")
+    d = f" delta ${delta:+.4f}"
+    rem = f"  remaining ${remaining:.4f}" if remaining is not None else ""
+    return f"  [{when}] usage ${usage:.4f}{d}{rem}"
+
+
+def run_watch(api_key: str, interval: int) -> int:
+    start = time.time()
+    baseline = None       # usage at session origin
+    last_usage = None
+    requests_made = 0
+    consecutive_failures = 0
+
+    try:
+        while True:
+            try:
+                d = derive(fetch_key_info(api_key))
+                requests_made += 1
+                consecutive_failures = 0
+                usage = d["usage"]
+                if baseline is None:
+                    baseline = usage
+                    print(f"  baseline: usage ${baseline:.4f} (session origin)\n")
+                else:
+                    print(render_tick(time.time(), usage,
+                                      usage - baseline, d["remaining"]))
+                last_usage = usage
+            except ApiError as e:
+                consecutive_failures += 1
+                print(f"  warn: {e} ({consecutive_failures}/5)", file=sys.stderr)
+                if consecutive_failures >= 5:
+                    print("orustrker: 5 consecutive failures, giving up",
+                          file=sys.stderr)
+                    return 1
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        elapsed = time.time() - start
+        acc = (last_usage - baseline) if (last_usage is not None
+                                          and baseline is not None) else 0.0
+        print(f"\n  session: {int(elapsed // 60)}m {int(elapsed % 60)}s, "
+              f"requests: {requests_made}, usage accrued: ${acc:.4f}")
+        return 0
+
+
 # ---------- self-check ----------
 
 def run_selftest() -> int:
@@ -200,6 +247,10 @@ def run_selftest() -> int:
         finally:
             _http_open = orig_open
 
+    ts = datetime(2026, 1, 2, 12, 34).timestamp()  # local-time roundtrip, TZ-safe
+    check("render_tick", render_tick(ts, 12.5, 2.0, 87.5),
+          "  [12:34:00] usage $12.5000 delta $+2.0000  remaining $87.5000")
+
     if failures:
         print(f"selftest: {len(failures)} failure(s)")
         return 1
@@ -221,8 +272,15 @@ def run() -> int:
         return run_selftest()
 
     if args.watch:
-        print("orustrker: watch mode pending", file=sys.stderr)
-        return 1
+        if args.watch <= 0:
+            print("orustrker: error: watch interval must be positive",
+                  file=sys.stderr)
+            return 1
+        try:
+            return run_watch(get_api_key(), args.watch)
+        except ApiError as e:
+            print(f"orustrker: error: {e}", file=sys.stderr)
+            return 1
 
     try:
         api_key = get_api_key()
