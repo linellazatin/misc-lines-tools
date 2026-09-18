@@ -59,6 +59,7 @@ def derive(data: dict) -> dict:
         "is_free_tier": bool(info.get("is_free_tier")),
         "usage": usage,
         "limit": limit,
+        "limit_reset": info.get("limit_reset"),
         "remaining": (limit - usage) if limit is not None else None,
         "rate_limit": rate,
         "free_tier_text": "yes" if info.get("is_free_tier") else "no",
@@ -109,6 +110,16 @@ def get_api_key() -> str:
     return key
 
 
+def rate_text(rate_limit: dict) -> str:
+    """'200 req / 10s', 'unlimited req / 10s', or '' if absent."""
+    if not rate_limit:
+        return ""
+    req = rate_limit.get("requests")
+    if req == -1:
+        req = "unlimited"
+    return f"{req} req / {rate_limit.get('interval', '?')}"
+
+
 def render_snapshot(api_key: str, data: dict) -> str:
     d = derive(data)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -119,15 +130,14 @@ def render_snapshot(api_key: str, data: dict) -> str:
         f"  used:      {fmt_usd(d['usage'])}",
     ]
     if d["limit"] is not None:
-        lines.append(f"  limit:     {fmt_usd(d['limit'])}")
+        resets = f" (resets {d['limit_reset']})" if d["limit_reset"] else ""
+        lines.append(f"  limit:     {fmt_usd(d['limit'])}{resets}")
         lines.append(f"  remaining: {fmt_usd(d['remaining'])}")
         lines.append(f"  progress:  {d['progress_bar']}")
     else:
         lines.append("  limit:     not set")
     if d["rate_limit"]:
-        rl = d["rate_limit"]
-        lines.append(f"  rate:      {rl.get('requests', '?')} req / "
-                     f"{rl.get('interval', '?')}")
+        lines.append(f"  rate:      {rate_text(d['rate_limit'])}")
     lines.append(f"  checked:   {now}")
     return "\n".join(lines)
 
@@ -214,6 +224,15 @@ def run_selftest() -> int:
     check("derive no limit", (d2["limit"], d2["remaining"], d2["percent"]),
           (None, None, None))
     check("derive missing data", derive({})["usage"], 0.0)
+    check("derive limit reset",
+          derive({"data": {"usage": 0, "limit": 100, "limit_reset": "monthly"}})["limit_reset"],
+          "monthly")
+
+    check("rate_text unlimited", rate_text({"requests": -1, "interval": "10s"}),
+          "unlimited req / 10s")
+    check("rate_text normal", rate_text({"requests": 200, "interval": "10s"}),
+          "200 req / 10s")
+    check("rate_text empty", rate_text({}), "")
 
     # -- fetch layer: stub _http_open with canned bodies --
     import io
