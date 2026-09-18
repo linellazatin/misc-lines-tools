@@ -66,6 +66,36 @@ def derive(data: dict) -> dict:
     }
 
 
+# ---------- network ----------
+
+class ApiError(Exception):
+    """User-presentable fetch failure."""
+
+
+def _http_open(req: urllib.request.Request) -> bytes:
+    return urllib.request.urlopen(req, timeout=10).read()
+
+
+def fetch_key_info(api_key: str) -> dict:
+    """GET /auth/key; returns parsed JSON or raises ApiError."""
+    req = urllib.request.Request(
+        API_URL, headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        body = _http_open(req)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise ApiError("bad or revoked API key (HTTP 401)") from e
+        if e.code == 429:
+            raise ApiError("rate limited (HTTP 429)") from e
+        raise ApiError(f"unexpected HTTP {e.code}") from e
+    except urllib.error.URLError as e:
+        raise ApiError(f"network error: {e.reason}") from e
+    try:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ApiError(f"unparseable response: {e}") from e
+
+
 # ---------- self-check ----------
 
 def run_selftest() -> int:
@@ -101,6 +131,38 @@ def run_selftest() -> int:
     check("derive no limit", (d2["limit"], d2["remaining"], d2["percent"]),
           (None, None, None))
     check("derive missing data", derive({})["usage"], 0.0)
+
+    # -- fetch layer: stub _http_open with canned bodies --
+    import io
+    global _http_open  # so fetch_key_info (separate fn) sees stubs
+    orig_open = _http_open
+
+    def fake_ok(req) -> bytes:
+        return b'{"data": {"usage": 1.0}}'
+
+    _http_open = fake_ok
+    try:
+        data = fetch_key_info("test-key")
+        check("fetch parses json", data["data"]["usage"], 1.0)
+    finally:
+        _http_open = orig_open
+
+    def fake_http_error(code):
+        def raiser(req):
+            raise urllib.error.HTTPError(
+                req.full_url, code, "err", {}, io.BytesIO(b""))
+        return raiser
+
+    for code, fragment in ((401, "401"), (429, "429"), (500, "500")):
+        _http_open = fake_http_error(code)
+        try:
+            try:
+                fetch_key_info("k")
+                check(f"fetch {code} raises", "no error", fragment)
+            except ApiError as e:
+                check(f"fetch {code} raises", fragment in str(e), True)
+        finally:
+            _http_open = orig_open
 
     if failures:
         print(f"selftest: {len(failures)} failure(s)")
