@@ -98,6 +98,7 @@ def derive(data: dict) -> dict:
         remaining = limit - spend
     else:
         remaining = None
+    progress_used = (limit - remaining) if limit is not None and remaining is not None else spend
     regions = info.get("allowed_data_regions") or []
     return {
         "is_free_tier": bool(info.get("is_free_tier")),
@@ -114,11 +115,12 @@ def derive(data: dict) -> dict:
         "limit": limit,
         "limit_reset": info.get("limit_reset"),
         "remaining": remaining,
+        "progress_used": progress_used,
         "expires": pretty_date(info.get("expires_at")),
         "free_reqs": info.get("free_model_daily_requests"),
         "rate_limit": info.get("rate_limit") or {},
-        "progress_bar": progress(spend, limit),
-        "percent": (spend / limit * 100) if limit else None,
+        "progress_bar": progress(progress_used, limit),
+        "percent": (progress_used / limit * 100) if limit else None,
     }
 
 
@@ -367,7 +369,7 @@ def bar_width() -> int:
 def run_snapshot(api_key: str, color: bool) -> int:
     data = fetch_key_info(api_key)
     d = derive(data)
-    d["progress_bar"] = progress(d["spend"], d["limit"], bar_width())
+    d["progress_bar"] = progress(d["progress_used"], d["limit"], bar_width())
     print(build_screen(api_key, d, time.time(), session=None, color=color))
     return 0
 
@@ -402,7 +404,7 @@ def run_watch(api_key: str, interval: int, tui: bool, color: bool,
         while True:
             try:
                 d = derive(fetch_key_info(api_key))
-                d["progress_bar"] = progress(d["spend"], d["limit"], bar_width())
+                d["progress_bar"] = progress(d["progress_used"], d["limit"], bar_width())
                 polls += 1
                 last_spend = d["spend"]
                 if baseline is None:
@@ -609,7 +611,7 @@ def run_tui(api_key, tui, color) -> int:
             elif k == "n":
                 try:
                     kd = derive(fetch_key_info(api_key))
-                    kd["progress_bar"] = progress(kd["spend"], kd["limit"],
+                    kd["progress_bar"] = progress(kd["progress_used"], kd["limit"],
                                                   bar_width())
                     if tui:
                         out(TUI_HOME + build_screen(api_key, kd, time.time(),
@@ -683,6 +685,12 @@ def run_selftest() -> int:
     check("derive BYOK spend", round(db["spend"], 4), 0.5)
     check("derive BYOK remaining", round(db["remaining"], 4), 9.5)
     check("derive BYOK percent", round(db["percent"], 2), 5.0)
+    check("derive BYOK progress", db["progress_bar"], progress(0.5, 10))
+    dr = derive({"data": {"usage": 0, "byok_usage": 78.082, "limit": 100,
+                           "limit_remaining": 87.2955}})
+    check("derive remaining progress used", round(dr["progress_used"], 4), 12.7045)
+    check("derive remaining percent", round(dr["percent"], 2), 12.70)
+    check("derive remaining progress", dr["progress_bar"], progress(12.7045, 100))
 
     check("rate_text unlimited", rate_text({"requests": -1, "interval": "10s"}),
           "unlimited req / 10s")
@@ -752,7 +760,7 @@ def run_selftest() -> int:
     dd = derive({"data": {"label": "app", "usage": 25.0, "limit": 100.0,
                           "limit_remaining": 75.0, "limit_reset": "monthly",
                           "free_model_daily_requests": {"used": 3, "limit": 1000, "remaining": 997}}})
-    dd["progress_bar"] = progress(dd["spend"], dd["limit"], 20)
+    dd["progress_bar"] = progress(dd["progress_used"], dd["limit"], 20)
     scr = build_screen("sk-or-v1-1234567890abcdef", dd, now, session=None, color=False)
     check("screen has title", f"orustrker v{__version__} · OpenRouter Usage Tracker" in scr, True)
     check("screen masks key", ("sk-or-v1" + BULLET * 16 + "cdef") in scr, True)
