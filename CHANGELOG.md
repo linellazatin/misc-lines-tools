@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 - 2026-10-02
+
+### orustrker v0.1.1
+
+**Fixed**
+- Progress bar and percentage now use `limit_remaining` when available.
+
 ## 0.1.1 - 2026-09-18
 
 ### lbrker v0.1.1
